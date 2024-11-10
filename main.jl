@@ -1,145 +1,89 @@
-using GLMakie, Lux, Optimization, OptimizationEvolutionary, Optimisers, OptimizationMetaheuristics, Zygote
-using Statistics, LinearAlgebra, Random, ForwardDiff
+using Pkg
+Pkg.activate("EMTrapFunctions")
+using EMTrapFunctions
 
-GLMakie.activate!(title="EM-Bottle-Trap")
+Page(listen_url = "localhost", listen_port = 9876)
+WGLMakie.activate!()
+Makie.inline!(true)
 
-const μ₀ = 4π * 10^-7
-const mₐ = 6.644657230e-27  # Example value for alpha particle mass in kg
-const qₐ = 3.2043533e-19  # Example value for alpha particle charge in C
-const lim = 15
-const dt = 10e-5
+fig = Figure(size=(1000, 1000))
+ax = LScene(fig[1, 1], show_axis=false, width = 800)
+label = Label(fig[0, 1], justification = :center, fontsize = 20)
 
-struct Dipole
-    mag::Float64
-    M::Vec3f
-    m::Vec3f
-    r::Point3f
-    Dipole(mag, m, r) = new(mag, mag * m, m, r)
-end
+rng = Random.Xoshiro(237897)
 
-function bottleB(r, M1::Dipole, M2::Dipole)
-    rA = r - M1.r
-    rmagA = sqrt(dot(rA, rA))
-    B1bottle = 3 * rA * dot(M1.M, rA) / rmagA^5
-    B2bottle = -(M1.M) / rmagA^3
-
-    rB = r - M2.r
-    rmagB = sqrt(dot(rB, rB))
-    B1bottle2 = 3 * rB * dot(M2.M, rB) / rmagB^5
-    B2bottle2 = -(M2.M) / rmagB^3
-
-    B_total = .+(B1bottle, B2bottle, B1bottle2, B2bottle2)
-
-    return (μ₀ / (4 * π) .* B_total)
-end
-
-function RK2step(Bfield::Function, M1::Dipole, M2::Dipole, v::Vec3f, r::Point3f) :: Tuple{Point3f, Vec3f}
-    dv1 = dt * (qₐ / mₐ) * cross(v, Bfield(r, M1, M2))
-    dr1 = dt * v
-
-    dv2 = dt * (qₐ / mₐ) * cross(v + dv1, Bfield(r + dr1, M1, M2))
-    dr2 = dt * (v + dv1)
-
-    return (r + (dr1 + dr2) / 2, v + (dv1 + dv2) / 2)
-end
-
-# Define the Loss function
-function Loss(NN, st, param, input)
-    output, st = NN(input, param, st)
-    r = Point3f(output[1])
-    v = Vec3f(output[2])
-    loss = 0
-    i = 1
-    while (!any(x -> abs(x) >= lim, r))
-        r1, v = RK2step(bottleB, M1, M2, v, r)
-        r = r1
-        i += 1
-        loss -= i
-        # loss -= dot(r, r)
-    end
-    return loss, st
-end
-
-function Train!(NN, trainIt, params, sts, optimizer)
-    magnitude = rand(10e4:10e6, trainIt)
-    for epoch in 1:trainIt
-        M1 = Dipole(magnitude[epoch], M, [0.0, 10.0, 0.0])
-        M2 = Dipole(magnitude[epoch], M, [0.0, -10.0, 0.0])
-        inputs = vcat(M1.M..., M2.M...)  # Ensure input is defined
-        inputs = Float32.(inputs)
-        (loss, sts,), back = pullback(Loss, NN, sts, params, inputs)
-        _, _, grad, _ = back((1.0, nothing))
-        optimizer, params = Optimisers.update(optimizer, params, grad)
-        push!(losshistory, loss)
-        if epoch % 10 == 0
-            println("Epoch: $epoch, Loss: $loss")
-            predictions, _ = NN(input, params, sts)
-            println("Predictions: ", predictions)
-        end
-    end
-    
-end
-
-M = Vec3f(0, 1, 0) # orientation of the dipole
-field = (r -> bottleB(r, M1, M2))
-
-# Create a grid of points
-x = y = z = range(-lim, lim, length=100)
-
-space = [Point3f(x, y, z) for x in x, y in y, z in z]
-
-# Initial conditions
-rP = Point3f[]  # Adjust the size as needed
-vP = Vec3f[]  # Adjust the size as needed
-rng = Xoshiro(3242)
-
-# Inputs: M, M. Output: x, y, z, vx, vx, vy, vz
-NN = Chain(Dense(6 => 18, swish), Dense(18 => 31, relu), Dense(31 => 15, tanh),
-    Parallel(nothing, Dense(15 => 6, x -> 2 * tanh(x)), Dense(15 => 6, x -> 8 * tanh(x))),
-    Parallel(nothing, Dense(6 => 3), Dense(6 => 3))
+# Inputs: M, M. Output: x, y, z, vx, vx, vy, vz, magnitude
+NN = Chain(
+    Dense(6 => 18, swish),
+    Dense(18 => 31, relu),
+    Dense(31 => 45, tanh),
+    Dense(45 => 22),
+    Parallel(nothing, Dense(22 => 6, sigmoid), Dense(22 => 6, softsign), Dense(22 => 13, x -> 10 * sigmoid(x))),
+    Parallel(nothing, Dense(6 => 3), Dense(6 => 6), Dense(13 => 8, x -> 10e5 * (sech(x))^2)),
+    Parallel(nothing, Dense(3 => 3, x -> lim/3 * tanh(x)), Dense(6 => 3, x -> 2 * lim * tanh(x)), Dense(8 => 1, abs))
 )
 params, sts = Lux.setup(rng, NN)
-optimizer = Optimisers.setup(RMSProp(1e-3, 3e-2), params)
+optimizer = Optimisers.setup(Adam(1e-5), params)
 
-magnitude = rand(10e4:10e6)
+# Initial conditions
+magnitude = rand(10e2:10e8)
 M1 = Dipole(magnitude, M, [0.0, 10.0, 0.0])
 M2 = Dipole(magnitude, M, [0.0, -10.0, 0.0])
-input = vcat(M1.M..., M2.M...)  # Ensure input is defined
+input = vcat(M1.M..., M2.M...)
 input = Float32.(input)
-initpred, _ = NN(input, params, sts)
+initpred = NN(input, params, sts)[1]
 
-losshistory = []
-Train!(NN, 1000, params, sts, optimizer)
+losshistory = Float64[]
+paramshistory = typeof(params)[]
+TrainIT = 10
+params = Train!(NN, TrainIT, params, sts, optimizer, losshistory, paramshistory, M1, M2)
+empty!(ax)
 
-i = 1
-finalpred, _ = NN(input, params, sts)
-push!(rP, finalpred[1])
-push!(vP, finalpred[2])
-while (!any(x -> abs(x) >= lim, rP[end]))
-    r, v = RK2step(bottleB, M1, M2, vP[i], rP[i])
-    push!(rP, r)
-    push!(vP, v)
-    i += 1
+
+r = [Point3f[] for _ in 1:length(paramshistory)]
+for (R, param) in zip(r, paramshistory)
+    (r₀, v, magnitude) = NN(input, param, sts)[1]
+    change_M!(M1, M2, magnitude[1])
+    push!(R, r₀)
+    v = Vec3f(v)
+    i = 1
+    while ((!any(x -> abs(x) >= lim, R[i])) && ((i * dt) < 60))
+        r₁, v = RK2step(bottleB, M1, M2, v, R[i])
+        push!(R, r₁)
+        i += 1
+    end
+    println("Time Trapped = ", i * dt)
 end
+GC.gc()
 
-trajectory = Observable(Point3f[])
-
-# Plot the field using quiver
-fig = Figure()
-ax = LScene(fig[1, 1], show_axis=false)
-interval = (v -> minimum(v) .. maximum(v))
+field = (r -> bottleB(r, M1, M2))
 streamplot!(ax, field, interval(x), interval(y), interval(z), density=0.3, alpha=0.1, transparency=true)
-arrows!(ax, [M1.r, M2.r], [M1.M, M2.M], arrowsize=0.7, lengthscale=1 / magnitude[1], linecolor=:red)
+arrows!(ax, [M1.r, M2.r], [M1.M, M2.M], arrowsize=0.7, lengthscale= 1 / M1.mag)
+cam = Makie.Camera3D(ax.scene, projectiontype = Makie.Perspective)
 
-# Plot the initial position
-plot = @lift(lines!(ax, $trajectory, color=:blue))
+tracks = [Observable(Point3f[]) for _ in 1:length(r)]
+labels = [@sprintf("%.0f", (i/10) * TrainIT) for i in 1:length(r)]
+lines = []
 
-# Plot the trajectory
-fps = 120
-display(fig)
-for t in 1:i
-    position = rP[t]
-    trajectory[] = push!(trajectory[], position)
-    plot
-    sleep(1 / fps)
+plt = for (track, i, label) in zip(tracks, 1:length(r), labels)
+    push!(lines, lines!(ax, track, transparency=true, linestyle=:dash, colormap=:Paired_8))
+end
+legend = Legend(fig[1, 2], lines, labels, "Training Iterations", fontsize = 10)
+
+stop = Threads.Atomic{Bool}(true)
+i = Threads.Atomic{Int}(1)
+intvl = 50
+@sync while true
+    stop[] = true
+    @threads for j in 1:length(paramshistory)
+        if (i[]) <= length(r[j])
+            tracks[j][] = push!(tracks[j][], r[j][i[]])
+            # tracks[j][] = append!(tracks[j][], r[j][((i-1)*fps)+1:i*fps])
+            stop[] = false
+        end
+    end
+    label.text[] = @sprintf("Time Trapped = %.2f s", i[] * dt) 
+    # sleep(dt) # 1s * speed
+    Threads.atomic_add!(i, intvl)
+    if stop[] break end
 end
