@@ -6,14 +6,10 @@ Page(listen_url = "localhost", listen_port = 9876)
 WGLMakie.activate!()
 Makie.inline!(true)
 
-fig = Figure(size=(1000, 1000))
-ax = LScene(fig[1, 1], show_axis=false, width = 800)
-label = Label(fig[0, 1], justification = :center, fontsize = 20)
-
-rng = Random.Xoshiro(237897)
+rng = Random.Xoshiro(253467897)
 
 # Inputs: M, M. Output: x, y, z, vx, vx, vy, vz, magnitude
-NN = Chain(
+NNₚ = Chain(
     Dense(6 => 18, swish),
     Dense(18 => 31, relu),
     Dense(31 => 45, tanh),
@@ -22,21 +18,21 @@ NN = Chain(
     Parallel(nothing, Dense(6 => 3), Dense(6 => 6), Dense(13 => 8, x -> 10e5 * (sech(x))^2)),
     Parallel(nothing, Dense(3 => 3, x -> lim/3 * tanh(x)), Dense(6 => 3, x -> 2 * lim * tanh(x)), Dense(8 => 1, abs))
 )
-params, sts = Lux.setup(rng, NN)
+params, sts = Lux.setup(rng, NNₚ)
 optimizer = Optimisers.setup(Adam(1e-5), params)
+NNₚ = NeuralNetwork(NNₚ, sts, params, optimizer)
 
-# Initial conditions
-magnitude = rand(10e2:10e8)
-M1 = Dipole(magnitude, M, [0.0, 10.0, 0.0])
-M2 = Dipole(magnitude, M, [0.0, -10.0, 0.0])
-input = vcat(M1.M..., M2.M...)
-input = Float32.(input)
-initpred = NN(input, params, sts)[1]
+NNₐ = Chain(
+    Dense(6 => 18, swish),
+) # Add more layers
+params, sts = Lux.setup(rng, NNₐ)
+optimizer = Optimisers.setup(RMSProp(1e-5), NNₐ.params)
+NNₐ = NeuralNetwork(NNₐ, sts, params, optimizer)
 
-losshistory = Float64[]
-paramshistory = typeof(params)[]
+losshistory = Tuple(Float64[])
+paramshistory = Tuple(typeof(params)[])
 TrainIT = 10
-params = Train!(NN, TrainIT, params, sts, optimizer, losshistory, paramshistory, M1, M2)
+Train!(NNₚ, NNₐ, TrainIT, losshistory, paramshistory)
 empty!(ax)
 
 
@@ -55,6 +51,10 @@ for (R, param) in zip(r, paramshistory)
     println("Time Trapped = ", i * dt)
 end
 GC.gc()
+
+fig = Figure(size=(1000, 1000))
+ax = LScene(fig[1, 1], show_axis=false, width = 800)
+label = Label(fig[0, 1], justification = :center, fontsize = 20)
 
 field = (r -> bottleB(r, M1, M2))
 streamplot!(ax, field, interval(x), interval(y), interval(z), density=0.3, alpha=0.1, transparency=true)
