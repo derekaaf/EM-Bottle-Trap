@@ -1,0 +1,12 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run Julia with VirtualGL",
+            "type": "shell",
+            "command": "vglrun",
+            "args": ["julia"],
+            "problemMatcher": []
+        }
+    ]
+}
