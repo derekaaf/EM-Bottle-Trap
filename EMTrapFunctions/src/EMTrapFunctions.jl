@@ -28,7 +28,7 @@ using Reexport
 # Export constants, functions, and types
 export μ₀, mₐ, qₐ, dt, lim, x, y, z, M, interval, simTime, vmax, Bmax, Bmin, Bscale, stepspersec
 export Dipole, NeuralNetwork, LayerL2Norm
-export change_M!, bottleB, bottlePotential, RK2step, Loss, Animate!, Train!, test, Simulate
+export change_m!, bottleB, bottlePotential, RK2step, Loss, Animate!, Train!, test, Simulate
 export col, tailcolor
 
 const μ₀ = 4π * 10^-7 # N/A²
@@ -37,14 +37,14 @@ const qₐ = 3.2043533e-19  # Example value for alpha particle charge in C
 const dt = 5e-5 # s
 const vmax = 1e6 # m/s, maximum velocity of the particle
 const Bmax = 2e8 # A/m
-const Bmin = 1e3
-const Bscale = 2e8
+const Bmin = 1e3 # A/m
+const Bscale = 2e8 # A/m
 const lim = 15 # m
-const x = y = z = range(-lim, lim, length=100) 
-const M = Vec3f(0, 1, 0) # orientation of the dipole
+const x = y = z = range(-lim, lim, length=100)  # m
+const D = Vec3f(0, 1, 0) # orientation of the dipole
 const simTime = 5 # s
 const interval = (v -> minimum(v) .. maximum(v))
-const stepspersec = Int(1/dt)
+const stepspersec = Int(1/dt) # 1/s
 
 const col = to_color(:grey37)
 tailcolor = [RGBAf(col.r, col.g, col.b, (i/(stepspersec))^4) for i in 1:10*stepspersec]
@@ -87,29 +87,29 @@ end
 Lux.initialstates(::AbstractRNG, layer::LayerL2Norm) = NamedTuple()
 
 function (l::LayerL2Norm)(x, ps, st)
-    norm2 = sqrt(sum(abs2, x))
-    scale = ifelse(norm2 > l.bound, l.bound / norm2, 1f0)
+    norD2 = sqrt(sum(abs2, x))
+    scale = ifelse(norD2 > l.bound, l.bound / norD2, 1f0)
     return x * scale, st
 end
 
 mutable struct Dipole
     mag::Float64
-    M::Vec3f
     m::Vec3f
+    m̂::Vec3f
     r::Point3f
-    Dipole(m, r) = new(0, Vec3f(0, 0, 0), m, r)
-    Dipole(mag, M, m, r) = new(mag, M, m, r)
+    Dipole(m̂, r) = new(0, Vec3f(0, 0, 0), m̂, r)
+    Dipole(mag, m, m̂, r) = new(mag, m, m̂, r)
 end
 
 function copy(dipole::Dipole)
-    new_dipole = Dipole(dipole.mag, dipole.M, dipole.m, dipole.r)
+    new_dipole = Dipole(dipole.mag, dipole.m, dipole.m̂, dipole.r)
     return new_dipole
 end
 
 # Custom setter for the m field
-function change_M!(dipole::Dipole, new_mag::Float64)
+function change_m!(dipole::Dipole, new_mag::Float64)
     dipole.mag = new_mag
-    dipole.M = dipole.m * new_mag
+    dipole.m = dipole.m̂ * new_mag
 end
 
 function change_r!(dipole::Dipole, new_r::Point3f)
@@ -119,46 +119,46 @@ end
 Zygote.@adjoint Point{3, Float32}(x) = Point{3, Float32}(x), Δ -> (nothing, Δ...)
 Zygote.@adjoint Vec{3, Float32}(x) = Vec{3, Float32}(x), Δ -> (nothing, Δ...)
 
-function bottleB(r::Point3f, M1::Dipole, M2::Dipole) :: Point3f
-    rA = r .- M1.r
+function bottleB(r::Point3f, D1::Dipole, D2::Dipole) :: Point3f
+    rA = r .- D1.r
     rmagA = sqrt(dot(rA, rA))
-    B1bottle = 3 * rA * dot(M1.M, rA) / rmagA^5
-    B2bottle = -(M1.M) / rmagA^3
+    B1bottle = 3 * rA * dot(D1.m, rA) / rmagA^5
+    B2bottle = -(D1.m) / rmagA^3
 
-    rB = r .- M2.r
+    rB = r .- D2.r
     rmagB = sqrt(dot(rB, rB))
-    B1bottle2 = 3 * rB * dot(M2.M, rB) / rmagB^5
-    B2bottle2 = -(M2.M) / rmagB^3
+    B1bottle2 = 3 * rB * dot(D2.m, rB) / rmagB^5
+    B2bottle2 = -(D2.m) / rmagB^3
 
     B_total = .+(B1bottle, B2bottle, B1bottle2, B2bottle2)
 
     return (μ₀ / (4 * π)) .* B_total
 end
 
-function bottlePotential(r::Point3f, M1::Dipole, M2::Dipole) :: Float64
-    rA = r .- M1.r
+function bottlePotential(r::Point3f, D1::Dipole, D2::Dipole) :: Float64
+    rA = r .- D1.r
     rmagA = sqrt(dot(rA, rA))
-    Potbottle1 = dot(M1.M, rA) / rmagA^3
+    Potbottle1 = dot(D1.m, rA) / rmagA^3
 
-    rB = r .- M2.r
+    rB = r .- D2.r
     rmagB = sqrt(dot(rB, rB))
-    Potbottle2 = dot(M2.M, rB) / rmagB^3
+    Potbottle2 = dot(D2.m, rB) / rmagB^3
 
     Potential_total = .+(Potbottle1, Potbottle2)
 
     return Potential_total/(4 * π)
 end
 
-function bottleU(r::Point3f, v::Vec3f, M1::Dipole, M2::Dipole) :: Float64
-    U = dot(cross(r, v), bottleB(r, M1, M2))
+function bottleU(r::Point3f, v::Vec3f, D1::Dipole, D2::Dipole) :: Float64
+    U = dot(cross(r, v), bottleB(r, D1, D2))
     return -(qₐ/(2*mₐ)) * U
 end
 
-function RK2step(Bfield::Function, M1::Dipole, M2::Dipole, v::Vec3f, r::Point3f) :: Tuple{Point3f, Vec3f}
-    dv1 = dt * (qₐ / mₐ) * cross(v, Bfield(r, M1, M2))
+function RK2step(Bfield::Function, D1::Dipole, D2::Dipole, v::Vec3f, r::Point3f) :: Tuple{Point3f, Vec3f}
+    dv1 = dt * (qₐ / mₐ) * cross(v, Bfield(r, D1, D2))
     dr1 = dt * v
 
-    dv2 = dt * (qₐ / mₐ) * cross(v .+ dv1, Bfield(Point3f(r .+ dr1), M1, M2))
+    dv2 = dt * (qₐ / mₐ) * cross(v .+ dv1, Bfield(Point3f(r .+ dr1), D1, D2))
     dr2 = dt * (v .+ dv1)
 
     r_new = Point3f(r .+ (dr1 .+ dr2) / 2)
@@ -166,7 +166,7 @@ function RK2step(Bfield::Function, M1::Dipole, M2::Dipole, v::Vec3f, r::Point3f)
 
     # Check for NaN values
     if any(isnan, r_new) || any(isnan, v_new)
-        println(r, v, M1, M2)
+        println(r, v, D1, D2)
         println(dv1, dv2, dr1, dr2)
         error("NaN detected in RK2step: r_new = $r_new, v_new = $v_new")
     end
@@ -174,7 +174,7 @@ function RK2step(Bfield::Function, M1::Dipole, M2::Dipole, v::Vec3f, r::Point3f)
     return r_new, v_new
 end
 
-function Decisions!(r::Point3f, v::Vec3f, M1::Dipole, M2::Dipole, v₀::Vector{Float64}, magnitude₀::Float64, NNₐ::NeuralNetwork, paramsₐ::NamedTuple) :: Float64
+function Decisions!(r::Point3f, v::Vec3f, D1::Dipole, D2::Dipole, v₀::Vector{Float64}, magnitude₀::Float64, NNₐ::NeuralNetwork, paramsₐ::NamedTuple) :: Float64
     loss = 0
     iter = 1
     position_smoothness = 0
@@ -184,14 +184,14 @@ function Decisions!(r::Point3f, v::Vec3f, M1::Dipole, M2::Dipole, v₀::Vector{F
     while ((!any(x -> abs(x) >= lim, r)) && ((iter * dt) < simTime))
         # if (iter * dt) % 1 == 0
         dedge = lim - norm(r)
-        input = Float32.(reshape(vcat(dedge, prev_r..., r..., v..., M1.M..., M2.M...), 16, 1))
+        input = Float32.(reshape(vcat(dedge, prev_r..., r..., v..., D1.m..., D2.m...), 16, 1))
         mag, NNₐ.states = NNₐ(input, paramsₐ)
         # end
         energy_efficiency += (sum(mag))^2
-        magnitude_smoothness += norm(mag[1] - M1.mag) + norm(mag[2] - M2.mag)
-        change_M!(M1, mag[1])
-        change_M!(M2, mag[2])
-        r₁, v = RK2step(bottleB, M1, M2, v, r)
+        magnitude_smoothness += norm(mag[1] - D1.mag) + norm(mag[2] - D2.mag)
+        change_m!(D1, mag[1])
+        change_m!(D2, mag[2])
+        r₁, v = RK2step(bottleB, D1, D2, v, r)
         position_smoothness += norm((r₁ .- r) / lim)
         r = r₁
         prev_r = r
@@ -202,17 +202,17 @@ function Decisions!(r::Point3f, v::Vec3f, M1::Dipole, M2::Dipole, v₀::Vector{F
     position_smoothness /= iter
     loss = 0.5 * position_smoothness + 0.1 * magnitude_smoothness + 0.4 * energy_efficiency
     loss /= iter * dt
-    loss += abs(M1.mag - M2.mag) / (M1.mag + M2.mag)
+    loss += abs(D1.mag - D2.mag) / (D1.mag + D2.mag)
 
     return loss
 end
 
-function Decisions!(r::Point3f, v::Vec3f, M1::Dipole, M2::Dipole, v₀::Vector{Float64}, magnitude₀::Float64, NNₐ::Nothing, paramsₐ::Nothing) :: Float64
+function Decisions!(r::Point3f, v::Vec3f, D1::Dipole, D2::Dipole, v₀::Vector{Float64}, magnitude₀::Float64, NNₐ::Nothing, paramsₐ::Nothing) :: Float64
     loss = 0
     iter = 1
     position_smoothness = 0
     while ((!any(x -> abs(x) >= lim, r)) && ((iter * dt) < simTime))
-        r₁, v = RK2step(bottleB, M1, M2, v, r)
+        r₁, v = RK2step(bottleB, D1, D2, v, r)
         position_smoothness += norm((r₁ .- r) / lim)
         r = r₁
         iter += 1
@@ -221,47 +221,47 @@ function Decisions!(r::Point3f, v::Vec3f, M1::Dipole, M2::Dipole, v₀::Vector{F
     loss *= norm(v₀) + 1
     loss += (magnitude₀ / (2*Bmax))^2
     loss /= iter * dt
-    loss += abs(M1.mag - M2.mag) / (M1.mag + M2.mag)
+    loss += abs(D1.mag - D2.mag) / (D1.mag + D2.mag)
 
     return loss
 end
 
 # Define the Loss function
-function Loss(M1::Dipole, M2::Dipole, NNₚ::NeuralNetwork, paramsₚ::NamedTuple, NNₐ::Union{NeuralNetwork, Nothing} = nothing, paramsₐ::Union{NamedTuple, Nothing} = nothing) :: Tuple{Float64, Float64, Float64}
-    inputs = Float32.(vcat(M1.r..., M2.r..., M1.m..., M2.m...))
+function Loss(D1::Dipole, D2::Dipole, NNₚ::NeuralNetwork, paramsₚ::NamedTuple, NNₐ::Union{NeuralNetwork, Nothing} = nothing, paramsₐ::Union{NamedTuple, Nothing} = nothing) :: Tuple{Float64, Float64, Float64}
+    inputs = Float32.(vcat(D1.r..., D2.r..., D1.m̂..., D2.m̂...))
     output, NNₚ.states = NNₚ(inputs, paramsₚ)
     r = Point3f(output[1])
     v = Vec3f(output[2] * output[3][1])
     sep = Float64.(output[4][1])
-    rdipole1 = Point3f(0, sep, 0)
-    rdipole2 = Point3f(0, -sep, 0)
-    change_r!(M1, rdipole1)
-    change_r!(M2, rdipole2)
+    rdipole1 = Point3f(0, sep/2, 0)
+    rdipole2 = Point3f(0, -sep/2, 0)
+    change_r!(D1, rdipole1)
+    change_r!(D2, rdipole2)
     magnitude1 = Float64.(output[5][1])
     magnitude2 = Float64.(output[5][2])
-    change_M!(M1, magnitude1)
-    change_M!(M2, magnitude2)
+    change_m!(D1, magnitude1)
+    change_m!(D2, magnitude2)
     
-    loss = Decisions!(r, v, M1, M2, Float64.(output[2] * output[3][1]), magnitude1 + magnitude2, NNₐ, paramsₐ)
+    loss = Decisions!(r, v, D1, D2, Float64.(output[2] * output[3][1]), magnitude1 + magnitude2, NNₐ, paramsₐ)
     
     return magnitude1, magnitude2, loss
 end
 
  function Train!(trainIt::Int, losshistory, fig, ax, label, NNₚ::NeuralNetwork, NNₐ::Union{NeuralNetwork, Nothing} = nothing)
     # if (trainIt % 10 != 0) error("trainIt must be a multiple of 10") end
-    M1 = Dipole(M, [0.0, 10.0, 0.0]) # Dipole at (0, 10, 0)
-    M2 = Dipole(M, [0.0, -10.0, 0.0]) # Dipole at (0, -10, 0)
+    D1 = Dipole(D, [0.0, 10.0, 0.0]) # Dipole at (0, 10, 0)
+    D2 = Dipole(D, [0.0, -10.0, 0.0]) # Dipole at (0, -10, 0)
     losses = Float64[]
 
     @showprogress dt=1 desc="Training Neural Network..." for epoch in 1:trainIt
         if !isnothing(NNₐ)
-            (magnitude1, magnitude2, loss,), back = pullback(Loss, M1, M2, NNₚ, NNₚ.params, NNₐ, NNₐ.params)
+            (magnitude1, magnitude2, loss,), back = pullback(Loss, D1, D2, NNₚ, NNₚ.params, NNₐ, NNₐ.params)
             _, _, _, ∂paramsₚ, _, ∂paramsₐ = back((nothing, nothing, 1.0))
             (isnothing(∂paramsₐ)) ? (@warn "∂paramsₐ is nothing at epoch $epoch") : nothing
             updateOptimizer!(NNₐ, ∂paramsₐ);
             NNₐ.states = Lux.update_state(NNₐ.states, :carry, nothing)
         else
-            (magnitude1, magnitude2, loss,), back = pullback(Loss, M1, M2, NNₚ, NNₚ.params)
+            (magnitude1, magnitude2, loss,), back = pullback(Loss, D1, D2, NNₚ, NNₚ.params)
             _, _, _, ∂paramsₚ = back((nothing, nothing, 1.0))
             isnothing(∂paramsₚ) ? (@warn "∂paramsₚ is nothing at epoch $epoch") : nothing
             updateOptimizer!(NNₚ, ∂paramsₚ)
@@ -269,8 +269,8 @@ end
 
         push!(losshistory, loss)
         push!(losses, loss)
-        change_M!(M1, magnitude1)
-        change_M!(M2, magnitude2)
+        change_m!(D1, magnitude1)
+        change_m!(D2, magnitude2)
 
     end
 
@@ -310,24 +310,24 @@ function Simulate(animTime::Float64, NNₚ::NeuralNetwork, NNₐ::Union{NeuralNe
     magnitudes2 = Float64[]
     U = Float64[]
 
-    M1 = Dipole(M, [0.0, 10.0, 0.0]) # Dipole at (0, 10, 0)
-    M2 = Dipole(M, [0.0, -10.0, 0.0]) # Dipole at (0, -10, 0)
-    initialValues = Float32.(vcat(M1.r..., M2.r..., M1.m..., M2.m...))
+    D1 = Dipole(D, [0.0, 10.0, 0.0]) # Dipole at (0, 10, 0)
+    D2 = Dipole(D, [0.0, -10.0, 0.0]) # Dipole at (0, -10, 0)
+    initialValues = Float32.(vcat(D1.r..., D2.r..., D1.m̂..., D2.m̂...))
     statesₚ = Lux.testmode(NNₚ.states)
-    (r₀, v, vmag, My, magnitudes) = test(NNₚ, initialValues, statesₚ)[1]
-    My = Float64.(My[1])
+    (r₀, v, vmag, Dsep, mag) = test(NNₚ, initialValues, statesₚ)[1]
+    Dsep = Float64.(Dsep[1])
     vmag = Float64.(vmag[1])
     v = v * vmag
-    change_r!(M1, Point3f(0, My, 0))
-    change_r!(M2, Point3f(0, -My, 0))
-    change_M!(M1, magnitudes[1])
-    change_M!(M2, magnitudes[2])
-    M1₀ = copy(M1)
-    M2₀ = copy(M2)
-    push!(magnitudes1, magnitudes[1])
-    push!(magnitudes2, magnitudes[2])
+    change_r!(D1, Point3f(0, Dsep/2, 0))
+    change_r!(D2, Point3f(0, -Dsep/2, 0))
+    change_m!(D1, mag[1])
+    change_m!(D2, mag[2])
+    D1₀ = copy(D1)
+    D2₀ = copy(D2)
+    push!(magnitudes1, mag[1])
+    push!(magnitudes2, mag[2])
     push!(r, r₀)
-    u = bottleU(Point3f(r₀), Vec3f(v), M1, M2)
+    u = bottleU(Point3f(r₀), Vec3f(v), D1, D2)
     push!(U, u)
     v = Vec3f(v)
     prev_r = r₀
@@ -338,17 +338,19 @@ function Simulate(animTime::Float64, NNₚ::NeuralNetwork, NNₐ::Union{NeuralNe
     end
     while ((!any(x -> abs(x) >= lim, r[i])) && ((i * dt) < animTime))
         if !isnothing(NNₐ)
-            dedge = lim - norm(r[i])
-            input = Float32.(reshape(vcat(dedge, prev_r..., r[i]..., v..., M1.M..., M2.M...), 16, 1))
-            mag, statesₐ = test(NNₐ, input, statesₐ)
+            if (i % stepspersec == 0)
+                dedge = lim - norm(r[i])
+                input = Float32.(reshape(vcat(dedge, prev_r..., r[i]..., v..., D1.m..., D2.m...), 16, 1))
+                mag, statesₐ = test(NNₐ, input, statesₐ)
+            end
             push!(magnitudes1, mag[1])
             push!(magnitudes2, mag[2])
-            change_M!(M1, mag[1])
-            change_M!(M2, mag[2])
+            change_m!(D1, mag[1])
+            change_m!(D2, mag[2])
         end
-        r₁, v = RK2step(bottleB, M1, M2, v, r[i])
+        r₁, v = RK2step(bottleB, D1, D2, v, r[i])
         push!(r, r₁)
-        u = bottleU(r₁, v, M1, M2)
+        u = bottleU(r₁, v, D1, D2)
         push!(U, u)
         prev_r = r[i]
         i += 1
@@ -356,7 +358,7 @@ function Simulate(animTime::Float64, NNₚ::NeuralNetwork, NNₐ::Union{NeuralNe
     end
     println("Time Trapped = ", i * dt, "s")
     GC.gc()
-    return (r, M1₀, M2₀, [magnitudes1, magnitudes2], U)
+    return (r, D1₀, D2₀, [magnitudes1, magnitudes2], U)
 end
 
 function rm!(args...)
