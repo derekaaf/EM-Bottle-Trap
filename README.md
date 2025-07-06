@@ -1,7 +1,8 @@
 # EM Trap: Step-by-Step Tutorial
 
-This tutorial explains **how** and **why** each part of the `EM Trap` Julia script is structured. Follow along to understand design decisions, code flow, and reproducibility practices.
+EM Trap is a Julia-based simulation framework that models interactions between magnetic dipoles using both static (passive) and dynamic (active) neural network architectures implemented in Lux.jl. The repository demonstrates environment setup, model definitions, training routines, and real-time 3D/2D visualizations of particle trajectories and potential fields. Through modular code and reproducible practices, EM Trap enables researchers to experiment with network designs, hyperparameters, and rendering workflows for magnetic field analysis and animation.
 
+For questions or suggestions, open an issue on GitHub.
 ---
 
 ## Activate Project and Load Package
@@ -309,4 +310,16 @@ end
 
 ---
 
-For questions or suggestions, open an issue on GitHub.
+# Samples
+
+All of the following videos are available in the test folder.
+
+## Heavily Trained NNs (> 200 iterations)
+https://github.com/user-attachments/assets/44c07eed-4273-4bbf-837c-4f38ea3a8415
+
+## NNs Trained over 100 iterations
+https://github.com/user-attachments/assets/5d6ef02e-d25e-4b4f-9d8c-d39b2c8d66f1
+
+## NNs Trained over 50 iterations
+https://github.com/user-attachments/assets/4ac8a4b9-cf40-4877-8678-e6ef7182362a
+
